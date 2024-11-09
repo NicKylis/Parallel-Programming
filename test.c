@@ -76,5 +76,5 @@ int main() {
 
     return 0;
 }
-//to compile you will need: gcc -fopenmp -I/usr/include/openblas -L/usr/lib/openblas -o e1 e1.c -lopenblas -lm
+//to compile you will need: gcc -fopenmp -I/usr/include/openblas -L/usr/lib/openblas -o test test.c -lopenblas -lm
 //TODO optimize the parallel algorithm

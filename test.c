@@ -12,7 +12,7 @@ int main() {
     clock_t s1, s2, s3;
     double cpu1, cpu2;
     // Example parameters
-    int num_points = 1000;      // Number of points in C and Q
+    int num_points = 10000;      // Number of points in C and Q
     int dimensions = 32;         // Dimensionality of each point
     int k = 10;                  // Number of nearest neighbors to find
 
@@ -20,7 +20,7 @@ int main() {
     double* C = (double*)malloc(num_points * dimensions * sizeof(double));
     double* Q = (double*)malloc(num_points * dimensions * sizeof(double));
 
-    FILE *file = fopen("two_arrays_32000_points.txt", "r");
+    FILE *file = fopen("arrays.txt", "r"); //Write the filename.txt here
     
     char header[100];
     fgets(header, sizeof(header), file);
@@ -77,3 +77,4 @@ int main() {
     return 0;
 }
 //to compile you will need: gcc -fopenmp -I/usr/include/openblas -L/usr/lib/openblas -o e1 e1.c -lopenblas -lm
+//TODO optimize the parallel algorithm

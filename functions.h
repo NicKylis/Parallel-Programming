@@ -6,9 +6,18 @@
 #include <math.h>
 #include <omp.h>
 #include <cblas.h>
-
+#include <pthread.h>
 
 #define min(a , b) ((a) < (b) ? (a) : (b))
+#define NUM_THREADS 8
+
+typedef struct {
+    double *distances;
+    int *indices;
+    int i;
+    int j;
+    int dir;
+} thread_data;
 
 int partition(double* distances, int* indices, int left, int right, int pivot_idx) {
     double pivot_val = distances[pivot_idx];
@@ -244,13 +253,13 @@ void knnsearch_parallel(double* C, double* Q, int num_points, int dimensions, in
         #pragma omp section
         {
             // Perform knnsearch on the first half
-            knnsearch(C, Q, half_points, dimensions, k, indices_half1, distances_half1);
+            knnsearchBLAS(C, Q, half_points, dimensions, k, indices_half1, distances_half1);
         }
 
         #pragma omp section
         {
             // Perform knnsearch on the second half
-            knnsearch(C + half_points * dimensions, Q, half_points, dimensions, k, indices_half2, distances_half2);
+            knnsearchBLAS(C + half_points * dimensions, Q, half_points, dimensions, k, indices_half2, distances_half2);
         }
     }
 
@@ -304,5 +313,201 @@ void knnsearch_parallel(double* C, double* Q, int num_points, int dimensions, in
 }
 
 
+// Function to compare and swap elements based on the direction
+void bitonic_compare(double *distances, int *indices, int i, int j, int dir) {
+    if (dir == (distances[i] > distances[j])) {
+        // Swap distances
+        double temp_dist = distances[i];
+        distances[i] = distances[j];
+        distances[j] = temp_dist;
+
+        // Swap corresponding indices
+        int temp_idx = indices[i];
+        indices[i] = indices[j];
+        indices[j] = temp_idx;
+    }
+}
+
+// Wrapper function for thread execution
+void* thread_bitonic_compare(void* arg) {
+    thread_data* data = (thread_data*)arg;
+    bitonic_compare(data->distances, data->indices, data->i, data->j, data->dir);
+    free(data); // Free memory after use
+    return NULL;
+}
+
+// Merging function for Bitonic sequence (recursive step)
+void bitonic_merge(double *distances, int *indices, int low, int count, int dir) {
+    if (count > 1) {
+        int k = count / 2;
+
+        // Create threads for the comparison phase
+        pthread_t threads[k];
+        for (int i = 0; i < k; i++) {
+            thread_data *data = (thread_data *)malloc(sizeof(thread_data));
+            data->distances = distances;
+            data->indices = indices;
+            data->i = low + i;
+            data->j = low + k + i;
+            data->dir = dir;
+
+            // Create a thread to compare elements
+            pthread_create(&threads[i], NULL, thread_bitonic_compare, (void *)data);
+        }
+
+        // Wait for all threads to complete
+        for (int i = 0; i < k; i++) {
+            pthread_join(threads[i], NULL);
+        }
+
+        // Recursive step to merge further
+        bitonic_merge(distances, indices, low, k, dir); //TODO parallel these
+        bitonic_merge(distances, indices, low + k, k, dir);
+    }
+}
+
+// Structure to pass data to threads
+typedef struct {
+    double *distances;
+    int *indices;
+    int low;
+    int count;
+    int dir; // Sorting direction: 1 for ascending, 0 for descending could be bool
+} threadData;
+
+// Swap function for both distances and indices
+void swap(double *a, double *b) {
+    double temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+void swapIndices(int *a, int *b) {
+    int temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+// Compare and Swap function
+void compareAndSwap(double distances[], int indices[], int i, int j, int dir) {
+    if ((dir == 1 && distances[i] > distances[j]) || (dir == 0 && distances[i] < distances[j])) {
+        // Swap distances
+        swap(&distances[i], &distances[j]);
+        // Swap corresponding indices
+        swapIndices(&indices[i], &indices[j]);
+    }
+}
+
+// Merge function for bitonic sort
+void bitonicMerge(double distances[], int indices[], int low, int count, int dir) {
+    if (count > 1) {
+        int k = count / 2;
+        for (int i = low; i < low + k; i++) {
+            compareAndSwap(distances, indices, i, i + k, dir);
+        }
+        bitonicMerge(distances, indices, low, k, dir);
+        bitonicMerge(distances, indices, low + k, k, dir);
+    }
+}
+
+// Thread function for recursive parallel bitonic sort
+void *parallelBitonicSort(void *arg) {
+    threadData *data = (threadData *)arg;
+    double *distances = data->distances;
+    int *indices = data->indices;
+    int low = data->low;
+    int count = data->count;
+    int dir = data->dir;
+
+    if (count > 1) {
+        int k = count / 2;
+
+        // Prepare thread data for ascending and descending halves
+        threadData left = {distances, indices, low, k, 1};
+        threadData right = {distances, indices, low + k, k, 0};
+
+        pthread_t thread1, thread2;
+
+        // Create threads for the two recursive sorts
+        pthread_create(&thread1, NULL, parallelBitonicSort, &left);
+        pthread_create(&thread2, NULL, parallelBitonicSort, &right);
+
+        // Wait for both threads to complete
+        pthread_join(thread1, NULL);
+        pthread_join(thread2, NULL);
+
+        // Merge the sorted sequences
+        bitonicMerge(distances, indices, low, count, dir);
+    }
+
+    return NULL;
+}
+
+// Entry point for bitonic sort
+void bitonicSort(double distances[], int indices[], int n, int ascending) {
+    threadData data = {distances, indices, 0, n, ascending};
+    parallelBitonicSort(&data);
+}
+
+// Main k-NN search function
+void knnsearch_parallelBITONIC(double* C, double* Q, int num_points, int dimensions, int k, int* indices, double* distances) {
+    // Split the dataset in half
+    int half_points = num_points / 2;
+
+    // Allocate memory for the indices and distances from the two halves
+    int* indices_half1 = (int*)malloc(num_points * k * sizeof(int));
+    int* indices_half2 = (int*)malloc(num_points * k * sizeof(int));
+    double* distances_half1 = (double*)malloc(num_points * k * sizeof(double));
+    double* distances_half2 = (double*)malloc(num_points * k * sizeof(double));
+
+    #pragma omp parallel sections
+    {
+        #pragma omp section
+        {
+            // Perform knnsearch on the first half
+            knnsearchBLAS(C, Q, half_points, dimensions, k, indices_half1, distances_half1);
+        }
+
+        #pragma omp section
+        {
+            // Perform knnsearch on the second half
+            knnsearchBLAS(C + half_points * dimensions, Q, half_points, dimensions, k, indices_half2, distances_half2);
+        }
+    }
+
+    // Combine the results from the two halves
+    for (int j = 0; j < num_points; ++j) {
+        // Merge results for point j (from both halves)
+        double* combined_distances = (double*)malloc(2 * k * sizeof(double));
+        int* combined_indices = (int*)malloc(2 * k * sizeof(int));
+
+        // Copy distances and indices from both halves
+        for (int m = 0; m < k; ++m) {
+            combined_distances[m] = distances_half1[j * k + m];
+            combined_indices[m] = indices_half1[j * k + m];
+            combined_distances[k + m] = distances_half2[j * k + m];
+            combined_indices[k + m] = indices_half2[j * k + m];
+        }
+
+        // Sort the combined results by distance using parallel bitonic sort
+        bitonicSort(combined_distances, combined_indices, 2 * k, 1); // Sort in ascending order of distance
+
+        // Store the final top-k indices and distances
+        for (int m = 0; m < k; ++m) {
+            indices[j * k + m] = combined_indices[m];
+            distances[j * k + m] = combined_distances[m];
+        }
+
+        // Free allocated memory for combined results
+        free(combined_distances);
+        free(combined_indices);
+    }
+
+    // Free the memory for half results
+    free(indices_half1);
+    free(indices_half2);
+    free(distances_half1);
+    free(distances_half2);
+}
 
 #endif

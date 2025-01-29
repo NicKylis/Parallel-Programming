@@ -40,8 +40,8 @@ Before running the `Makefile`, make sure you have the following installed:
 1. **Clone the repository** (if you haven't already):
 
    ```bash
-   git clone <repository-url>
-   cd <repository-directory>
+   git clone https://github.com/NicKylis/Parallel-Programming.git
+   cd Parallel-Programming
    ```
 
 2. **Check that your `clang` points to the OpenCilk version**:
